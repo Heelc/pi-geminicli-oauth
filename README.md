@@ -6,21 +6,51 @@
 
 ## 安装
 
-当前项目可作为 Pi package/extension 使用。开发态可以在项目根目录运行：
+一条命令即可安装（用户级）：
 
 ```bash
-pi -e ./src/index.ts
+pi install https://github.com/Heelc/pi-geminicli-oauth
 ```
 
-或在 Pi package 安装后，由 `package.json` 中的 `pi.extensions` 自动加载：
+只想装到当前项目（写入 `.pi/settings.json`）可以加 `-l`：
 
-```json
-{
-  "pi": {
-    "extensions": ["./src/index.ts"]
-  }
-}
+```bash
+pi install -l https://github.com/Heelc/pi-geminicli-oauth
 ```
+
+Pi 会把仓库克隆到 `<配置目录>/git/github.com/Heelc/pi-geminicli-oauth` 并自动加载 `package.json` 中 `pi.extensions` 指向的 `./src/index.ts`。**无需 `npm install`**：运行时只依赖 Node 内置模块和 Pi 自身提供的 `@earendil-works/pi-ai`，`typescript` / `vitest` 仅在开发时需要。
+
+安装后可以确认 provider 已注册：
+
+```bash
+pi --list-models gemini-cli
+```
+
+```text
+provider          model                   context  max-out  thinking  images
+gemini-cli-oauth  gemini-3-flash          1M       65.5K    yes       yes
+gemini-cli-oauth  gemini-3.1-pro-preview  1M       65.5K    yes       yes
+```
+
+更新与卸载：
+
+```bash
+pi update https://github.com/Heelc/pi-geminicli-oauth
+pi remove https://github.com/Heelc/pi-geminicli-oauth
+```
+
+也支持其他来源写法，例如 `pi install git:github.com/Heelc/pi-geminicli-oauth`。
+
+### 从源码开发
+
+```bash
+git clone https://github.com/Heelc/pi-geminicli-oauth
+cd pi-geminicli-oauth
+npm install          # 仅开发/测试需要
+pi -e ./src/index.ts # 单次加载，不写入 settings
+```
+
+或用 `pi install ./pi-geminicli-oauth` 安装本地路径。
 
 ## 登录
 
@@ -138,6 +168,7 @@ Provider ID：`gemini-cli-oauth`
 ## 开发验证
 
 ```bash
+npm install
 npm test
 npm run typecheck
 ```
