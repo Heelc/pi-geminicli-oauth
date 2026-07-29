@@ -1,0 +1,43 @@
+{
+  "name": "pi-geminicli-oauth",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pi 扩展：通过 Gemini CLI OAuth 接入 Gemini Code Assist。",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Heelc/pi-geminicli-oauth.git"
+  },
+  "homepage": "https://github.com/Heelc/pi-geminicli-oauth#readme",
+  "bugs": {
+    "url": "https://github.com/Heelc/pi-geminicli-oauth/issues"
+  },
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "gemini",
+    "gemini-cli",
+    "gemini-code-assist",
+    "oauth"
+  ],
+  "scripts": {
+    "test": "vitest --run",
+    "typecheck": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.80.3",
+    "@earendil-works/pi-coding-agent": "^0.80.3",
+    "@types/node": "^24.12.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9"
+  }
+}
