@@ -202,6 +202,21 @@ npm run typecheck
 - managed project 自动发现、free-tier onboarding、模型 aliases 与非零 cost 元数据、managedProjectId 长期持久化
 - User-Agent 版本/surface 覆盖、project context 缓存与 onboard 轮询、debug 日志脱敏、Retry-After/cooldown、请求前主动 refresh 与凭据持久化
 
+## 发布流程
+
+本项目通过 npm **Trusted Publishing**（GitHub Actions OIDC）发版，仓库里不存任何 npm token，发布时也不需要 2FA 一次性码。
+
+发一个新版本：
+
+```bash
+npm version patch      # 或 minor / major，会自动改 package.json 并打 tag
+git push --follow-tags
+```
+
+推送 `v*` tag 会触发 `.github/workflows/publish.yml`：先校验 tag 与 `package.json` 版本一致，再跑 `npm ci`、typecheck、测试，最后 `npm publish`。任一步失败都不会发布。也可以在 Actions 页面手动触发（`workflow_dispatch`）。
+
+发布产物会自动带上 [provenance 证明](https://docs.npmjs.com/generating-provenance-statements)，使用者可以验证包确实由本仓库的这条工作流构建。
+
 ## OAuth 客户端凭据说明
 
 `src/constants.ts` 中的 `GEMINI_CLIENT_ID` / `GEMINI_CLIENT_SECRET` 与官方开源 [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) 使用的是同一组公开 installed-app 凭据。按 OAuth 2.0 规范，原生/CLI 客户端的 client secret 不具备机密性，因此它们随源码公开不构成凭据泄漏。
