@@ -1,24 +1,33 @@
 # Pi Gemini CLI OAuth Provider
 
+[![npm version](https://img.shields.io/npm/v/pi-geminicli-oauth.svg)](https://www.npmjs.com/package/pi-geminicli-oauth)
+[![license](https://img.shields.io/npm/l/pi-geminicli-oauth.svg)](./LICENSE)
+
 这是一个 Pi 扩展包，新增 `gemini-cli-oauth` provider，用于通过 Gemini CLI 风格 OAuth 登录访问 Gemini Code Assist，并支持配置 Google Cloud `projectId`，让企业用户使用指定 Google project 的额度。
 
 > 风险提示：Gemini CLI OAuth 接入第三方工具可能受 Google 政策和风控影响。企业或组织账号请优先确认内部合规要求，并显式配置 `projectId`。
 
 ## 安装
 
-一条命令即可安装（用户级）：
+从 npm 安装（推荐）：
+
+```bash
+pi install npm:pi-geminicli-oauth
+```
+
+或直接从 GitHub 安装：
 
 ```bash
 pi install https://github.com/Heelc/pi-geminicli-oauth
 ```
 
-只想装到当前项目（写入 `.pi/settings.json`）可以加 `-l`：
+两种方式都可以加 `-l` 只装到当前项目（写入 `.pi/settings.json`）而不是用户级：
 
 ```bash
-pi install -l https://github.com/Heelc/pi-geminicli-oauth
+pi install -l npm:pi-geminicli-oauth
 ```
 
-Pi 会把仓库克隆到 `<配置目录>/git/github.com/Heelc/pi-geminicli-oauth` 并自动加载 `package.json` 中 `pi.extensions` 指向的 `./src/index.ts`。**无需 `npm install`**：运行时只依赖 Node 内置模块和 Pi 自身提供的 `@earendil-works/pi-ai`，`typescript` / `vitest` 仅在开发时需要。
+Pi 会自动加载 `package.json` 中 `pi.extensions` 指向的 `./src/index.ts`。**无需额外 `npm install`**：运行时只依赖 Node 内置模块和 Pi 自身提供的 `@earendil-works/pi-ai`（已声明为 optional peer dependency，不会被重复安装），`typescript` / `vitest` 仅开发时需要。
 
 安装后可以确认 provider 已注册：
 
@@ -32,14 +41,16 @@ gemini-cli-oauth  gemini-3-flash          1M       65.5K    yes       yes
 gemini-cli-oauth  gemini-3.1-pro-preview  1M       65.5K    yes       yes
 ```
 
-更新与卸载：
+更新与卸载（把来源替换成你安装时用的写法）：
 
 ```bash
-pi update https://github.com/Heelc/pi-geminicli-oauth
-pi remove https://github.com/Heelc/pi-geminicli-oauth
+pi update npm:pi-geminicli-oauth
+pi remove npm:pi-geminicli-oauth
 ```
 
-也支持其他来源写法，例如 `pi install git:github.com/Heelc/pi-geminicli-oauth`。
+也支持 `pi install git:github.com/Heelc/pi-geminicli-oauth` 等其他来源写法。
+
+要求 Node >= 20。
 
 ### 从源码开发
 

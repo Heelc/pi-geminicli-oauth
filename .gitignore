@@ -6,6 +6,9 @@ gemini-cli-oauth-debug-*.log
 # 本地 Pi 配置与凭据
 .pi/
 
+# 测试临时夹具目录
+src/tmp-*/
+
 # 开发过程笔记（本地保留，不随仓库发布）
 task_plan.md
 findings.md
