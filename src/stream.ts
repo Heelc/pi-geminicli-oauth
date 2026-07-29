@@ -507,7 +507,8 @@ function getCustomThinkingBudget(
   customBudgets: SimpleStreamOptions["thinkingBudgets"] | undefined,
   reasoning: Exclude<SimpleStreamOptions["reasoning"], undefined>,
 ): number | undefined {
-  if (reasoning === "xhigh") return customBudgets?.high;
+  // ThinkingBudgets 只有 minimal/low/medium/high，xhigh 与 max 落到 high
+  if (reasoning === "xhigh" || reasoning === "max") return customBudgets?.high;
   return customBudgets?.[reasoning];
 }
 
@@ -521,6 +522,7 @@ function getThinkingBudget(reasoning: Exclude<SimpleStreamOptions["reasoning"], 
       return 8192;
     case "high":
     case "xhigh":
+    case "max":
     default:
       return highBudget;
   }
