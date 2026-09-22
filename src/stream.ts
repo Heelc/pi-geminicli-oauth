@@ -6,9 +6,11 @@ import {
   type SimpleStreamOptions as PiSimpleStreamOptions,
   type StopReason,
   type Tool,
+  type ToolCall,
   calculateCost,
   createAssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
+import * as piAi from "@earendil-works/pi-ai";
 
 import { buildCodeAssistRequest, formatCodeAssistError, parseCodeAssistSse, unwrapCodeAssistBody } from "./code-assist";
 import { PROVIDER_ID } from "./constants";
@@ -27,7 +29,8 @@ import { createGeminiDebugLogger, type GeminiDebugLogger } from "./debug";
 
 type GeminiCliOAuthApi = "gemini-cli-oauth-api";
 
-interface SimpleStreamOptions extends PiSimpleStreamOptions {
+// pi-ai 0.87 把 ToolChoice 收窄成 "auto" | "none"；本插件额外支持 Gemini 的 ANY，所以不能直接 extends。
+interface SimpleStreamOptions extends Omit<PiSimpleStreamOptions, "toolChoice"> {
   cwd?: string;
   homeDir?: string;
   toolChoice?: "auto" | "none" | "any";
@@ -114,11 +117,12 @@ export function streamGeminiCliOAuth(
       stream.push({ type: "start", partial: output });
 
       const generationConfig = buildGenerationConfig(model.id, options);
+      const { systemPrompt, tools } = resolvePromptAndTools(context);
       const basePayload = {
-        systemInstruction: context.systemPrompt ? { parts: [{ text: context.systemPrompt }] } : undefined,
+        systemInstruction: systemPrompt ? { parts: [{ text: systemPrompt }] } : undefined,
         contents: convertContextMessages(context, model),
-        tools: context.tools?.length ? convertContextTools(context.tools) : undefined,
-        toolConfig: context.tools?.length && options.toolChoice ? { functionCallingConfig: { mode: mapToolChoice(options.toolChoice) } } : undefined,
+        tools: tools.length ? convertContextTools(tools) : undefined,
+        toolConfig: tools.length && options.toolChoice ? { functionCallingConfig: { mode: mapToolChoice(options.toolChoice) } } : undefined,
         ...(generationConfig ? { generationConfig } : {}),
       };
       const payload = await applyPayloadHook(basePayload, model, options);
@@ -364,7 +368,8 @@ function appendToolCall(
     type: "toolCall" as const,
     id: functionCall.id || `${functionCall.name ?? "tool"}_${Date.now()}_${contentIndex}`,
     name: functionCall.name ?? "",
-    arguments: functionCall.args ?? {},
+    // Gemini 的 args 就是解析好的 JSON，pi-ai 0.86 起把 ToolCall.arguments 限定为 JsonObject
+    arguments: (functionCall.args ?? {}) as ToolCall["arguments"],
     ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
   };
   output.content.push(toolCall);
@@ -526,6 +531,26 @@ function getThinkingBudget(reasoning: Exclude<SimpleStreamOptions["reasoning"], 
     default:
       return highBudget;
   }
+}
+
+type TranscriptHelpers = {
+  getCurrentSystemPrompt?: (messages: readonly { role: string }[]) => string;
+  getCurrentTools?: (messages: readonly { role: string }[]) => Tool[];
+};
+
+/**
+ * pi-ai 0.86 起 provider 收到的是 TranscriptContext：systemPrompt 与 tools 被折进 role=system 的
+ * 消息里，`context.systemPrompt` / `context.tools` 恒为 undefined。只读旧字段会把系统提示词和工具
+ * 声明整个漏掉——模型仍按提示词去调工具，Gemini 回 MALFORMED_FUNCTION_CALL。新版本用它自带的回放
+ * 函数取回；老版本没有这两个函数（命名空间取属性得 undefined，不会像具名 import 那样在加载期报错），
+ * 仍读旧字段。
+ */
+function resolvePromptAndTools(context: Context): { systemPrompt: string | undefined; tools: Tool[] } {
+  const helpers = piAi as unknown as TranscriptHelpers;
+  const canReplay = typeof helpers.getCurrentSystemPrompt === "function" && typeof helpers.getCurrentTools === "function";
+  const systemPrompt = context.systemPrompt ?? (canReplay ? helpers.getCurrentSystemPrompt!(context.messages) || undefined : undefined);
+  const tools = context.tools ?? (canReplay ? helpers.getCurrentTools!(context.messages) : []);
+  return { systemPrompt, tools };
 }
 
 function convertContextMessages(context: Context, model: Model<Api>): Array<{ role: "user" | "model"; parts: Array<Record<string, unknown>> }> {

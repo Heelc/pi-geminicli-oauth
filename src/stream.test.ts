@@ -554,6 +554,54 @@ describe("streamGeminiCliOAuth", () => {
     }
   });
 
+  it("pi 0.86+ 的 TranscriptContext：从 system 消息里取回 systemPrompt 与工具声明", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedBody: Record<string, unknown> | undefined;
+    globalThis.fetch = async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}]}}\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    };
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        {
+          // 没有 systemPrompt / tools 字段，全部折在首条 system 消息里
+          messages: [
+            {
+              role: "system",
+              content: "你是编码助手",
+              toolsAdded: [
+                {
+                  name: "read",
+                  description: "读取文件",
+                  parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+                },
+              ],
+              timestamp: 1,
+            },
+            { role: "user", content: "hi", timestamp: 2 },
+          ],
+        } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" } },
+      );
+
+      await collectEvents(stream);
+
+      const request = capturedBody?.request as Record<string, unknown>;
+      expect(request.systemInstruction).toEqual({ parts: [{ text: "你是编码助手" }] });
+      expect(request.contents).toEqual([{ role: "user", parts: [{ text: "hi" }] }]);
+      expect(request.tools).toEqual([
+        { functionDeclarations: [expect.objectContaining({ name: "read", description: "读取文件" })] },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("把 toolChoice 和工具声明转成 Gemini toolConfig", async () => {
     const originalFetch = globalThis.fetch;
     let capturedBody: Record<string, unknown> | undefined;
