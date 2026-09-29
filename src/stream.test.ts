@@ -6,7 +6,9 @@ import { describe, expect, it } from "vitest";
 
 import { PROVIDER_ID } from "./constants";
 import registerExtension from "./index";
-import { streamGeminiCliOAuth } from "./stream";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
+
+import { streamGeminiCliOAuth, TRUNCATED_STREAM_ERROR } from "./stream";
 import { resetProjectContextCache } from "./project";
 
 async function collectEvents(stream: AsyncIterable<unknown>): Promise<unknown[]> {
@@ -847,6 +849,81 @@ describe("streamGeminiCliOAuth", () => {
       expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: "done", reason: "error", message: expect.objectContaining({ stopReason: "error", errorMessage: expect.stringContaining("SAFETY") }) }),
       ]));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("流没收到 finishReason 就结束时报可重试错误，而不是正常 stop", async () => {
+    // 真机形状（gemini-3.8-flash，约 0.6% 的请求）：只回了一段 thought、没有 finishReason 与 usageMetadata。
+    // 报 stop 的话 pi 当成「没有工具调用的正常结束」直接收工，整轮零产物。
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(
+        ['data: {"response":{"candidates":[{"content":{"parts":[{"text":"**Investigating**","thought":true}],"role":"model"}}]}}', ""].join("\n"),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3.8-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { messages: [{ role: "user", content: "hi" }] } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" } },
+      );
+
+      const events = await collectEvents(stream);
+      const done = events.find((event) => (event as { type: string }).type === "done") as { reason: string; message: never };
+
+      expect(done.reason).toBe("error");
+      expect(done.message).toEqual(expect.objectContaining({ stopReason: "error", errorMessage: TRUNCATED_STREAM_ERROR }));
+      // 文案必须命中 pi-ai 自己的可重试判据，pi 才会原地重发这一次请求而不是结束整轮。
+      expect(isRetryableAssistantError(done.message)).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("只带 usageMetadata 不带 finishReason 仍按完整响应处理（只认两样都缺才算截断）", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(['data: {"response":{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}}', ""].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3.8-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { messages: [{ role: "user", content: "hi" }] } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" } },
+      );
+
+      const events = await collectEvents(stream);
+      const done = events.find((event) => (event as { type: string }).type === "done") as { reason: string; message: { stopReason: string; errorMessage?: string } };
+
+      expect(done.reason).toBe("stop");
+      expect(done.message.stopReason).toBe("stop");
+      expect(done.message.errorMessage).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("MAX_TOKENS 收尾保持 length，不被截断判据覆盖", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(['data: {"response":{"candidates":[{"content":{"parts":[{"text":"half"}],"role":"model"},"finishReason":"MAX_TOKENS"}]}}', ""].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3.8-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { messages: [{ role: "user", content: "hi" }] } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" } },
+      );
+
+      const events = await collectEvents(stream);
+      const done = events.find((event) => (event as { type: string }).type === "done") as { reason: string; message: { stopReason: string; errorMessage?: string } };
+
+      expect(done.reason).toBe("length");
+      expect(done.message.stopReason).toBe("length");
+      expect(done.message.errorMessage).toBeUndefined();
     } finally {
       globalThis.fetch = originalFetch;
     }

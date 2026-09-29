@@ -73,7 +73,18 @@ interface TextStreamState {
   contentIndex?: number;
   type?: "text" | "thinking";
   text: string;
+  /** 是否收到过流的收尾信号（finishReason 或 usageMetadata）。两样都没有就结束的流是被截断的。 */
+  finished?: boolean;
 }
+
+/**
+ * 流在既没有 finishReason 也没有 usageMetadata 的情况下结束：响应被截断（实测 gemini-3.8-flash
+ * 约 0.6% 的请求只回了一段 thought、usage 全 0）。只认两样都缺，不单凭 finishReason：收尾块带了
+ * 用量却没带 finishReason 的形状没见过，真出现时按原样当完整响应，不凭空多一次重发。
+ * 原来按初始值报 stop，pi 看到「没有工具调用的正常结束」就收工，整轮零产物。报成 error 且文案
+ * 命中 pi-ai 的可重试规则（"ended without"），pi 会原地重发这一次请求。
+ */
+export const TRUNCATED_STREAM_ERROR = "Gemini stream ended without finishReason (response truncated)";
 
 export function streamGeminiCliOAuth(
   model: Model<Api>,
@@ -155,6 +166,12 @@ export function streamGeminiCliOAuth(
         applyGeminiSseText(model, output, text, stream, textState, includeThoughts);
       }
       finalizeTextBlock(output, stream, textState);
+      if (options.signal?.aborted) {
+        output.stopReason = "aborted";
+      } else if (!textState.finished) {
+        output.stopReason = "error";
+        output.errorMessage = TRUNCATED_STREAM_ERROR;
+      }
 
       stream.push({ type: "done", reason: getDoneReason(output.stopReason), message: output } as never);
       stream.end(output);
@@ -294,12 +311,14 @@ function applyGeminiBodyToMessage(
 
   const candidate = body.candidates?.[0];
   if (candidate?.finishReason) {
+    textState.finished = true;
     output.stopReason = mapGeminiStopReason(candidate.finishReason);
     if (output.stopReason === "error") output.errorMessage = `Gemini finishReason: ${candidate.finishReason}`;
   }
   const responseId = body.responseId ?? body.traceId;
   if (responseId) output.responseId = responseId;
   if (body.usageMetadata) {
+    textState.finished = true;
     output.usage.input = body.usageMetadata.promptTokenCount ?? output.usage.input;
     output.usage.output = body.usageMetadata.candidatesTokenCount ?? output.usage.output;
     output.usage.cacheRead = body.usageMetadata.cachedContentTokenCount ?? output.usage.cacheRead;
