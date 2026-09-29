@@ -73,18 +73,20 @@ interface TextStreamState {
   contentIndex?: number;
   type?: "text" | "thinking";
   text: string;
-  /** 是否收到过流的收尾信号（finishReason 或 usageMetadata）。两样都没有就结束的流是被截断的。 */
+  /** 是否收到过 finishReason。 */
   finished?: boolean;
 }
 
 /**
- * 流在既没有 finishReason 也没有 usageMetadata 的情况下结束：响应被截断（实测 gemini-3.8-flash
- * 约 0.6% 的请求只回了一段 thought、usage 全 0）。只认两样都缺，不单凭 finishReason：收尾块带了
- * 用量却没带 finishReason 的形状没见过，真出现时按原样当完整响应，不凭空多一次重发。
- * 原来按初始值报 stop，pi 看到「没有工具调用的正常结束」就收工，整轮零产物。报成 error 且文案
- * 命中 pi-ai 的可重试规则（"ended without"），pi 会原地重发这一次请求。
+ * 没有工具调用、却也没给出正文或 finishReason 的回复是坏回复，判据照抄 gemini-cli（geminiChat 的
+ * NO_FINISH_REASON／NO_RESPONSE_TEXT，它对这两种都重试）。真机形状（gemini-3.8-flash，约 0.6% 的
+ * 请求）：只回了一段 thought、usage 全 0。原来按 stop 报，pi 看到「没有工具调用的正常结束」就收工，
+ * 整轮零产物。0.1.3 只认「finishReason 与 usage 都缺」，真机证明这种回复带着 finishReason，没拦住。
+ * 报成 error 且文案命中 pi-ai 的可重试规则（"ended without"），pi 原地重发这一次请求。
+ * 只改写 stop：length、toolUse、SAFETY 等已有的结束原因原样保留。
  */
 export const TRUNCATED_STREAM_ERROR = "Gemini stream ended without finishReason (response truncated)";
+export const EMPTY_RESPONSE_ERROR = "Gemini stream ended without response text (only thoughts, no content)";
 
 export function streamGeminiCliOAuth(
   model: Model<Api>,
@@ -168,9 +170,12 @@ export function streamGeminiCliOAuth(
       finalizeTextBlock(output, stream, textState);
       if (options.signal?.aborted) {
         output.stopReason = "aborted";
-      } else if (!textState.finished) {
-        output.stopReason = "error";
-        output.errorMessage = TRUNCATED_STREAM_ERROR;
+      } else if (output.stopReason === "stop" && !output.content.some((block) => block.type === "toolCall")) {
+        const hasText = output.content.some((block) => block.type === "text" && block.text.trim() !== "");
+        if (!textState.finished || !hasText) {
+          output.stopReason = "error";
+          output.errorMessage = textState.finished ? EMPTY_RESPONSE_ERROR : TRUNCATED_STREAM_ERROR;
+        }
       }
 
       stream.push({ type: "done", reason: getDoneReason(output.stopReason), message: output } as never);
@@ -318,7 +323,6 @@ function applyGeminiBodyToMessage(
   const responseId = body.responseId ?? body.traceId;
   if (responseId) output.responseId = responseId;
   if (body.usageMetadata) {
-    textState.finished = true;
     output.usage.input = body.usageMetadata.promptTokenCount ?? output.usage.input;
     output.usage.output = body.usageMetadata.candidatesTokenCount ?? output.usage.output;
     output.usage.cacheRead = body.usageMetadata.cachedContentTokenCount ?? output.usage.cacheRead;

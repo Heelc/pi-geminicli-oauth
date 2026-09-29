@@ -8,7 +8,7 @@ import { PROVIDER_ID } from "./constants";
 import registerExtension from "./index";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 
-import { streamGeminiCliOAuth, TRUNCATED_STREAM_ERROR } from "./stream";
+import { EMPTY_RESPONSE_ERROR, streamGeminiCliOAuth, TRUNCATED_STREAM_ERROR } from "./stream";
 import { resetProjectContextCache } from "./project";
 
 async function collectEvents(stream: AsyncIterable<unknown>): Promise<unknown[]> {
@@ -883,10 +883,106 @@ describe("streamGeminiCliOAuth", () => {
     }
   });
 
-  it("只带 usageMetadata 不带 finishReason 仍按完整响应处理（只认两样都缺才算截断）", async () => {
+  it("带 finishReason 但只有 thought、没有正文：判空回复并可重试（0.1.3 漏掉的真机形状）", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(['data: {"response":{"candidates":[{"content":{"parts":[{"text":"**Investigating**","thought":true}],"role":"model"},"finishReason":"STOP"}]}}', ""].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3.8-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { messages: [{ role: "user", content: "hi" }] } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" } },
+      );
+
+      const events = await collectEvents(stream);
+      const done = events.find((event) => (event as { type: string }).type === "done") as { reason: string; message: { stopReason: string; errorMessage?: string } };
+
+      expect(done.reason).toBe("error");
+      expect(done.message.stopReason).toBe("error");
+      expect(done.message.errorMessage).toBe(EMPTY_RESPONSE_ERROR);
+      expect(isRetryableAssistantError(done.message as never)).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("正文只有空白也判空回复", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(['data: {"response":{"candidates":[{"content":{"parts":[{"text":"  \\n"}],"role":"model"},"finishReason":"STOP"}]}}', ""].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3.8-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { messages: [{ role: "user", content: "hi" }] } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" } },
+      );
+
+      const events = await collectEvents(stream);
+      const done = events.find((event) => (event as { type: string }).type === "done") as { reason: string; message: { stopReason: string; errorMessage?: string } };
+
+      expect(done.reason).toBe("error");
+      expect(done.message.stopReason).toBe("error");
+      expect(done.message.errorMessage).toBe(EMPTY_RESPONSE_ERROR);
+      expect(isRetryableAssistantError(done.message as never)).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("关闭 thinking 输出时 thought-only 回复同样判空", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(['data: {"response":{"candidates":[{"content":{"parts":[{"text":"**Investigating**","thought":true}],"role":"model"},"finishReason":"STOP"}]}}', ""].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3.8-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { messages: [{ role: "user", content: "hi" }] } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" }, includeThoughts: false } as never,
+      );
+
+      const events = await collectEvents(stream);
+      const done = events.find((event) => (event as { type: string }).type === "done") as { reason: string; message: { stopReason: string; errorMessage?: string } };
+
+      expect(done.reason).toBe("error");
+      expect(done.message.stopReason).toBe("error");
+      expect(done.message.errorMessage).toBe(EMPTY_RESPONSE_ERROR);
+      expect(isRetryableAssistantError(done.message as never)).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("只带 usageMetadata 不带 finishReason 也按截断处理（与 gemini-cli 同判据）", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () =>
       new Response(['data: {"response":{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}}', ""].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3.8-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { messages: [{ role: "user", content: "hi" }] } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" } },
+      );
+
+      const events = await collectEvents(stream);
+      const done = events.find((event) => (event as { type: string }).type === "done") as { reason: string; message: { stopReason: string; errorMessage?: string } };
+
+      expect(done.reason).toBe("error");
+      expect(done.message.stopReason).toBe("error");
+      expect(done.message.errorMessage).toBe(TRUNCATED_STREAM_ERROR);
+      expect(isRetryableAssistantError(done.message as never)).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("STOP + 只有 functionCall、没有正文：照常执行工具，不判空回复", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(['data: {"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a"},"id":"c1"}}],"role":"model"},"finishReason":"STOP"}]}}', ""].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
 
     try {
       const stream = streamGeminiCliOAuth(
