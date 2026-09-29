@@ -1,6 +1,6 @@
 {
   "name": "pi-geminicli-oauth",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Pi 扩展：通过 Gemini CLI OAuth 接入 Gemini Code Assist。",
   "license": "MIT",
