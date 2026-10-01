@@ -39,6 +39,7 @@ pi --list-models gemini-cli
 provider          model                   context  max-out  thinking  images
 gemini-cli-oauth  gemini-3-flash          1M       65.5K    yes       yes
 gemini-cli-oauth  gemini-3.1-pro-preview  1M       65.5K    yes       yes
+gemini-cli-oauth  gemini-3.8-flash        1.0M     65.5K    yes       yes
 ```
 
 更新与卸载（把来源替换成你安装时用的写法）：
@@ -156,7 +157,8 @@ Provider ID：`gemini-cli-oauth`
 
 初始注册模型与常用别名：
 
-- `gemini-3-flash`：`preview`、`flash-preview`、`gemini-preview`
+- `gemini-3.8-flash`：最新 Flash，无别名，用完整 ID 选择
+- `gemini-3-flash`：`preview`、`flash-preview`、`gemini-preview`（别名保持指向它，已有配置不受影响）
 - `gemini-3.1-pro-preview`：`pro`、`pro-preview`、`gemini-pro-preview`
 
 模型元数据已提供非零成本估算，避免 usage cost 被误报为 0。

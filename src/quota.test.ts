@@ -96,4 +96,17 @@ describe("formatGeminiQuota", () => {
     expect(output).not.toContain("重置时间：2026-07-02T04:45:17Z");
     expect(output).not.toContain("，类型：");
   });
+
+  it("Flash 组内 3.8 排在 3 之前（按版本号降序，而不是字典序）", () => {
+    const output = formatGeminiQuota("codeassist-preview", {
+      buckets: [
+        { modelId: "gemini-3-flash", remainingFraction: 0.5, tokenType: "REQUESTS" },
+        { modelId: "gemini-2.5-flash", remainingFraction: 0.5, tokenType: "REQUESTS" },
+        { modelId: "gemini-3.8-flash", remainingFraction: 0.5, tokenType: "REQUESTS" },
+      ],
+    });
+
+    expect(output.indexOf("gemini-3.8-flash")).toBeLessThan(output.indexOf("gemini-3-flash"));
+    expect(output.indexOf("gemini-3-flash")).toBeLessThan(output.indexOf("gemini-2.5-flash"));
+  });
 });

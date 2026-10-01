@@ -11,6 +11,10 @@ import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import { EMPTY_RESPONSE_ERROR, streamGeminiCliOAuth, TRUNCATED_STREAM_ERROR } from "./stream";
 import { resetProjectContextCache } from "./project";
 
+// Gemini 3 系的请求形状（thinkingLevel、functionCall/functionResponse 带 id、图片放进 functionResponse.parts）
+// 由模型 ID 里的 "gemini-3" 判定，新旧 Flash 各验一遍，免得新模型悄悄落进 2.5 的分支。
+const GEMINI_3_FLASH_MODELS = ["gemini-3-flash", "gemini-3.8-flash"];
+
 async function collectEvents(stream: AsyncIterable<unknown>): Promise<unknown[]> {
   const events: unknown[] = [];
   for await (const event of stream) events.push(event);
@@ -48,7 +52,7 @@ describe("extension provider registration", () => {
   });
 
 
-  it("仅注册 Gemini 3 Flash 与 Gemini 3.1 Pro Preview 模型", () => {
+  it("注册 Gemini 3.8 Flash、Gemini 3 Flash 与 Gemini 3.1 Pro Preview 模型", () => {
     const registrations: Array<{ id: string; config: Record<string, unknown> }> = [];
     const pi = {
       registerProvider(id: string, config: Record<string, unknown>) {
@@ -60,8 +64,16 @@ describe("extension provider registration", () => {
     registerExtension(pi as never);
 
     const models = registrations[0].config.models as Array<Record<string, unknown>>;
-    expect(models.map((model) => model.id)).toEqual(["gemini-3-flash", "gemini-3.1-pro-preview"]);
+    expect(models.map((model) => model.id)).toEqual(["gemini-3.8-flash", "gemini-3-flash", "gemini-3.1-pro-preview"]);
     expect(models).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "gemini-3.8-flash",
+        name: "Gemini 3.8 Flash (Gemini CLI OAuth)",
+        reasoning: true,
+        input: ["text", "image"],
+        contextWindow: 1_048_576,
+        maxTokens: 65_536,
+      }),
       expect.objectContaining({ id: "gemini-3-flash", aliases: expect.arrayContaining(["preview", "flash-preview", "gemini-preview"]) }),
       expect.objectContaining({ id: "gemini-3.1-pro-preview", aliases: expect.arrayContaining(["pro", "pro-preview", "gemini-pro-preview"]) }),
     ]));
@@ -72,6 +84,41 @@ describe("extension provider registration", () => {
       const cost = model.cost as Record<string, number>;
       expect(cost.input).toBeGreaterThan(0);
       expect(cost.output).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("registered models", () => {
+  it("每个注册的模型经 provider 的 streamSimple 发出的请求都带它自己的 ID 与 thinkingLevel", async () => {
+    let config: Record<string, unknown> | undefined;
+    registerExtension({ registerProvider: (_id: string, value: Record<string, unknown>) => { config = value; }, registerCommand() {} } as never);
+    const models = config!.models as Array<{ id: string }>;
+    const streamSimple = config!.streamSimple as (model: unknown, context: unknown, options: unknown) => AsyncIterable<unknown>;
+    const originalFetch = globalThis.fetch;
+    const sent: Array<Record<string, unknown>> = [];
+    globalThis.fetch = async (_url, init) => {
+      sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}]}}\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    };
+    try {
+      for (const model of models) {
+        const events = await collectEvents(streamSimple(
+          { ...model, api: "gemini-cli-oauth-api", provider: PROVIDER_ID },
+          { messages: [{ role: "user", content: "hi" }] },
+          { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" }, reasoning: "high" },
+        ));
+        expect(events.at(-1)).toEqual(expect.objectContaining({ type: "done" }));
+      }
+      expect(sent.map((body) => body.model)).toEqual(models.map((model) => model.id));
+      for (const body of sent) {
+        const generationConfig = (body.request as Record<string, unknown>).generationConfig as Record<string, unknown>;
+        expect(generationConfig.thinkingConfig).toEqual({ thinkingLevel: "high", includeThoughts: true });
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });
@@ -415,7 +462,7 @@ describe("streamGeminiCliOAuth", () => {
   });
 
 
-  it("按参考实现把 systemPrompt 作为 systemInstruction 发送", async () => {
+  it.each(GEMINI_3_FLASH_MODELS)("按参考实现把 systemPrompt 作为 systemInstruction 发送（%s）", async (modelId) => {
     const originalFetch = globalThis.fetch;
     let capturedBody: Record<string, unknown> | undefined;
     globalThis.fetch = async (_url, init) => {
@@ -428,7 +475,7 @@ describe("streamGeminiCliOAuth", () => {
 
     try {
       const stream = streamGeminiCliOAuth(
-        { id: "gemini-3-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { id: modelId, api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
         {
           systemPrompt: "你是编码助手",
           messages: [{ role: "user", content: "hi" }],
@@ -438,6 +485,7 @@ describe("streamGeminiCliOAuth", () => {
 
       await collectEvents(stream);
 
+      expect(capturedBody?.model).toBe(modelId);
       const request = capturedBody?.request as Record<string, unknown>;
       expect(request.systemInstruction).toEqual({ parts: [{ text: "你是编码助手" }] });
       expect(request.contents).toEqual([{ role: "user", parts: [{ text: "hi" }] }]);
@@ -482,7 +530,7 @@ describe("streamGeminiCliOAuth", () => {
   });
 
 
-  it("把 Pi toolCall 历史和 toolResult 转成 Gemini functionCall/functionResponse", async () => {
+  it.each(GEMINI_3_FLASH_MODELS)("把 Pi toolCall 历史和 toolResult 转成 Gemini functionCall/functionResponse（%s）", async (modelId) => {
     const originalFetch = globalThis.fetch;
     let capturedBody: Record<string, unknown> | undefined;
     globalThis.fetch = async (_url, init) => {
@@ -495,14 +543,14 @@ describe("streamGeminiCliOAuth", () => {
 
     try {
       const stream = streamGeminiCliOAuth(
-        { id: "gemini-3-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { id: modelId, api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
         {
           messages: [
             { role: "user", content: [{ type: "text", text: "读 README" }] },
             {
               role: "assistant",
               provider: PROVIDER_ID,
-              model: "gemini-3-flash",
+              model: modelId,
               content: [
                 { type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" }, thoughtSignature: "sig-1" },
               ],
@@ -1152,7 +1200,7 @@ describe("streamGeminiCliOAuth", () => {
     }
   });
 
-  it("Gemini 3 toolResult 图片放入 functionResponse.parts", async () => {
+  it.each(GEMINI_3_FLASH_MODELS)("Gemini 3 toolResult 图片放入 functionResponse.parts（%s）", async (modelId) => {
     const originalFetch = globalThis.fetch;
     let capturedBody: Record<string, unknown> | undefined;
     globalThis.fetch = async (_url, init) => {
@@ -1165,10 +1213,10 @@ describe("streamGeminiCliOAuth", () => {
 
     try {
       const stream = streamGeminiCliOAuth(
-        { id: "gemini-3-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { id: modelId, api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
         {
           messages: [
-            { role: "assistant", provider: PROVIDER_ID, model: "gemini-3-flash", content: [{ type: "toolCall", id: "call-1", name: "read_image", arguments: {} }], api: "gemini-cli-oauth-api", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: 1 },
+            { role: "assistant", provider: PROVIDER_ID, model: modelId, content: [{ type: "toolCall", id: "call-1", name: "read_image", arguments: {} }], api: "gemini-cli-oauth-api", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: 1 },
             { role: "toolResult", toolCallId: "call-1", toolName: "read_image", content: [{ type: "text", text: "截图" }, { type: "image", data: "abc", mimeType: "image/png" }], isError: false, timestamp: 2 },
           ],
         } as never,

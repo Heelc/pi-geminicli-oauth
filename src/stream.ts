@@ -704,6 +704,15 @@ const GEMINI_CODE_ASSIST_COST = { input: 0.000000125, output: 0.000000375, cache
 
 export const GEMINI_CLI_OAUTH_MODELS = [
   {
+    id: "gemini-3.8-flash",
+    name: "Gemini 3.8 Flash (Gemini CLI OAuth)",
+    reasoning: true,
+    input: ["text", "image"] as Array<"text" | "image">,
+    cost: GEMINI_CODE_ASSIST_COST,
+    contextWindow: 1_048_576,
+    maxTokens: 65_536,
+  },
+  {
     id: "gemini-3-flash",
     name: "Gemini 3 Flash (Gemini CLI OAuth)",
     aliases: ["preview", "flash-preview", "gemini-preview"],
