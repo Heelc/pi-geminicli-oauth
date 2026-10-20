@@ -923,7 +923,7 @@ describe("streamGeminiCliOAuth", () => {
       const done = events.find((event) => (event as { type: string }).type === "done") as { reason: string; message: never };
 
       expect(done.reason).toBe("error");
-      expect(done.message).toEqual(expect.objectContaining({ stopReason: "error", errorMessage: TRUNCATED_STREAM_ERROR }));
+      expect(done.message).toEqual(expect.objectContaining({ stopReason: "error", errorMessage: `${TRUNCATED_STREAM_ERROR}: only thoughts, output tokens 0` }));
       // 文案必须命中 pi-ai 自己的可重试判据，pi 才会原地重发这一次请求而不是结束整轮。
       expect(isRetryableAssistantError(done.message)).toBe(true);
     } finally {
@@ -948,7 +948,7 @@ describe("streamGeminiCliOAuth", () => {
 
       expect(done.reason).toBe("error");
       expect(done.message.stopReason).toBe("error");
-      expect(done.message.errorMessage).toBe(EMPTY_RESPONSE_ERROR);
+      expect(done.message.errorMessage).toBe(`${EMPTY_RESPONSE_ERROR} (finishReason STOP, only thoughts, output tokens 0)`);
       expect(isRetryableAssistantError(done.message as never)).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
@@ -972,7 +972,7 @@ describe("streamGeminiCliOAuth", () => {
 
       expect(done.reason).toBe("error");
       expect(done.message.stopReason).toBe("error");
-      expect(done.message.errorMessage).toBe(EMPTY_RESPONSE_ERROR);
+      expect(done.message.errorMessage).toBe(`${EMPTY_RESPONSE_ERROR} (finishReason STOP, no thoughts, output tokens 0)`);
       expect(isRetryableAssistantError(done.message as never)).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
@@ -996,7 +996,101 @@ describe("streamGeminiCliOAuth", () => {
 
       expect(done.reason).toBe("error");
       expect(done.message.stopReason).toBe("error");
-      expect(done.message.errorMessage).toBe(EMPTY_RESPONSE_ERROR);
+      expect(done.message.errorMessage).toBe(`${EMPTY_RESPONSE_ERROR} (finishReason STOP, only thoughts, output tokens 0)`);
+      expect(isRetryableAssistantError(done.message as never)).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("连 thought 都没有、输出 0 token：文案照实说，并带上认不得的 finishReason（2026-10-20 真机形状）", async () => {
+    // 真机：知识库更新同一请求 4 次空回，每次约 2.7 秒、输出 0 token、没有 thought；原文案一律说「only thoughts」。
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(['data: {"response":{"candidates":[{"content":{"role":"model"},"finishReason":"RECITATION"}],"usageMetadata":{"promptTokenCount":69689,"totalTokenCount":69689}}}', ""].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3.8-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { messages: [{ role: "user", content: "hi" }] } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" } },
+      );
+
+      const events = await collectEvents(stream);
+      const done = events.find((event) => (event as { type: string }).type === "done") as { reason: string; message: { stopReason: string; errorMessage?: string } };
+
+      expect(done.message.stopReason).toBe("error");
+      expect(done.message.errorMessage).toBe(`${EMPTY_RESPONSE_ERROR} (finishReason RECITATION, no thoughts, output tokens 0)`);
+      expect(isRetryableAssistantError(done.message as never)).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("报错或中断的回复不回放：会话续跑时只发「工具结果 + 新的用户消息」", async () => {
+    // pi 重试用尽后退出，最后那条报错的空回复留在会话里；vopus 接着同一个会话发「继续」时它会出现在上下文中。
+    const originalFetch = globalThis.fetch;
+    let capturedBody: Record<string, unknown> | undefined;
+    globalThis.fetch = async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}]}}\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    };
+    const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    const assistant = (content: unknown[], stopReason: string) => ({ role: "assistant", provider: PROVIDER_ID, model: "gemini-3.8-flash", api: "gemini-cli-oauth-api", content, usage, stopReason, timestamp: 1 });
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3.8-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        {
+          messages: [
+            { role: "user", content: "读 a.txt", timestamp: 1 },
+            assistant([{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.txt" } }], "toolUse"),
+            { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{ type: "text", text: "4711" }], isError: false, timestamp: 2 },
+            assistant([{ type: "text", text: "" }], "error"),
+            assistant([{ type: "toolCall", id: "call-2", name: "read", arguments: {} }], "aborted"),
+            { role: "user", content: "继续", timestamp: 3 },
+          ],
+        } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" } },
+      );
+
+      await collectEvents(stream);
+
+      const request = capturedBody?.request as { contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> };
+      expect(request.contents.map((content) => content.role)).toEqual(["user", "model", "user", "user"]);
+      expect(request.contents[3]).toEqual({ role: "user", parts: [{ text: "继续" }] });
+      expect(JSON.stringify(request.contents)).not.toContain("call-2");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("先有 thought 再有正文、随后断流：截断文案说已有正文，不说只有思考", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(
+        [
+          'data: {"response":{"candidates":[{"content":{"parts":[{"text":"**Planning**","thought":true}],"role":"model"}}]}}',
+          'data: {"response":{"candidates":[{"content":{"parts":[{"text":"写到一半"}],"role":"model"}}]}}',
+          "",
+        ].join("\n"),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+
+    try {
+      const stream = streamGeminiCliOAuth(
+        { id: "gemini-3.8-flash", api: "gemini-cli-oauth-api", provider: PROVIDER_ID } as never,
+        { messages: [{ role: "user", content: "hi" }] } as never,
+        { apiKey: "access-token", env: { PI_GEMINI_CLI_PROJECT_ID: "codeassist-preview" } },
+      );
+
+      const events = await collectEvents(stream);
+      const done = events.find((event) => (event as { type: string }).type === "done") as { reason: string; message: { stopReason: string; errorMessage?: string } };
+
+      expect(done.message.errorMessage).toBe(`${TRUNCATED_STREAM_ERROR}: has text, output tokens 0`);
       expect(isRetryableAssistantError(done.message as never)).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
@@ -1020,7 +1114,7 @@ describe("streamGeminiCliOAuth", () => {
 
       expect(done.reason).toBe("error");
       expect(done.message.stopReason).toBe("error");
-      expect(done.message.errorMessage).toBe(TRUNCATED_STREAM_ERROR);
+      expect(done.message.errorMessage).toBe(`${TRUNCATED_STREAM_ERROR}: has text, output tokens 1`);
       expect(isRetryableAssistantError(done.message as never)).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;

@@ -73,8 +73,11 @@ interface TextStreamState {
   contentIndex?: number;
   type?: "text" | "thinking";
   text: string;
-  /** 是否收到过 finishReason。 */
+  /** 是否收到过 finishReason，以及原样的值（报错时带上，空回复是被拦还是模型自己收工才分得开）。 */
   finished?: boolean;
+  finishReason?: string;
+  /** 是否收到过 thought：关闭 thinking 输出时它不进 content，只能另记。 */
+  sawThought?: boolean;
 }
 
 /**
@@ -84,9 +87,12 @@ interface TextStreamState {
  * 整轮零产物。0.1.3 只认「finishReason 与 usage 都缺」，真机证明这种回复带着 finishReason，没拦住。
  * 报成 error 且文案命中 pi-ai 的可重试规则（"ended without"），pi 原地重发这一次请求。
  * 只改写 stop：length、toolUse、SAFETY 等已有的结束原因原样保留。
+ * 0.1.6 起文案后面带上原样的 finishReason、有没有 thought、输出 token 数：认不得的结束原因（RECITATION、
+ * PROHIBITED_CONTENT、OTHER…）都按 stop 处理，原来一律报成「only thoughts」——真机上连 thought 都没有、
+ * 输出 0 token、同一请求 4 次空回，文案却说只有思考，是被拦还是模型自己收工无从分辨。
  */
 export const TRUNCATED_STREAM_ERROR = "Gemini stream ended without finishReason (response truncated)";
-export const EMPTY_RESPONSE_ERROR = "Gemini stream ended without response text (only thoughts, no content)";
+export const EMPTY_RESPONSE_ERROR = "Gemini stream ended without response text";
 
 export function streamGeminiCliOAuth(
   model: Model<Api>,
@@ -173,8 +179,12 @@ export function streamGeminiCliOAuth(
       } else if (output.stopReason === "stop" && !output.content.some((block) => block.type === "toolCall")) {
         const hasText = output.content.some((block) => block.type === "text" && block.text.trim() !== "");
         if (!textState.finished || !hasText) {
+          const received = hasText ? "has text" : textState.sawThought ? "only thoughts" : "no thoughts";
+          const detail = `${received}, output tokens ${output.usage.output}`;
           output.stopReason = "error";
-          output.errorMessage = textState.finished ? EMPTY_RESPONSE_ERROR : TRUNCATED_STREAM_ERROR;
+          output.errorMessage = textState.finished
+            ? `${EMPTY_RESPONSE_ERROR} (finishReason ${textState.finishReason}, ${detail})`
+            : `${TRUNCATED_STREAM_ERROR}: ${detail}`;
         }
       }
 
@@ -300,6 +310,7 @@ function applyGeminiBodyToMessage(
   for (const part of parts) {
     if (part.text !== undefined) {
       if (part.thought === true) {
+        textState.sawThought = true;
         if (includeThoughts) appendThinking(output, stream, textState, part.text, part.thoughtSignature);
       } else appendText(output, stream, textState, part.text);
   }
@@ -317,6 +328,7 @@ function applyGeminiBodyToMessage(
   const candidate = body.candidates?.[0];
   if (candidate?.finishReason) {
     textState.finished = true;
+    textState.finishReason = candidate.finishReason;
     output.stopReason = mapGeminiStopReason(candidate.finishReason);
     if (output.stopReason === "error") output.errorMessage = `Gemini finishReason: ${candidate.finishReason}`;
   }
@@ -588,6 +600,9 @@ function convertContextMessages(context: Context, model: Model<Api>): Array<{ ro
     }
 
     if (message.role === "assistant") {
+      // 报错或中断的回复不回放（同 pi-ai 自带 provider 的 transformMessages）。会话续跑时最后那条报错的回复
+      // 还在历史里：空回复会变成一个空的 model 轮次，半截的工具调用没有对应的结果，请求会被拒。
+      if (message.stopReason === "error" || message.stopReason === "aborted") continue;
       const parts = message.content
         .map((content) => {
           if (content.type === "text") return { text: content.text };
